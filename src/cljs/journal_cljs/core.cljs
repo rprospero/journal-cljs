@@ -1,51 +1,86 @@
 (ns journal-cljs.core
   (:require [reagent.core :as r]
+            [cljs.core.async :refer [chan <! put!]]
             [traversy.lens :refer [view in each *> conditionally]]
-            [tubax.core :as xml]))
-(def xml "<rss version=\"2.0\">
-           <channel>
-             <title>RSS Title</title>
-             <description>This is an example of an RSS feed</description>
-             <link>http://www.example.com/main.html</link>
-             <lastBuildDate>Mon, 06 Sep 2010 00:01:00 +0000 </lastBuildDate>
-             <pubDate>Sun, 06 Sep 2009 16:20:00 +0000</pubDate>
-             <ttl>1800</ttl>
-             <item>
-               <title>Example entry</title>
-               <description>Here is some text containing an interesting description.</description>
-               <link>http://www.example.com/blog/post/1</link>
-               <guid isPermaLink=\"false\">7bd204c6-1655-4c27-aeee-53f933c5395f</guid>
-               <pubDate>Sun, 06 Sep 2009 16:20:00 +0000</pubDate>
-             </item>
-             <item>
-               <title>Example entry2</title>
-               <description>Here is some text containing an interesting description.</description>
-               <link>http://www.example.com/blog/post/1</link>
-               <guid isPermaLink=\"false\">7bd204c6-1655-4c27-aeee-53f933c5395f</guid>
-               <pubDate>Sun, 06 Sep 2009 16:20:00 +0000</pubDate>
-             </item>
-           </channel>
-         </rss>")
+            [tubax.core :as xml])
+  (:require-macros [cljs.core.async.macros :refer [go-loop]]))
+
+(def app-state
+  (r/atom
+   {:file-name "No File"
+    :data []}))
+
+
+(def first-file
+  (map (fn [e]
+         (let [target (.-currentTarget e)
+               file (-> target .-files (aget 0))]
+           (set! (.-value target) "")
+           file))))
+
+(def extract-result
+  (map #(-> % .-target .-result xml/xml->clj)))
+
+(def upload-reqs (chan 1 first-file))
+(def file-reads (chan 1 extract-result))
+
+(defn put-upload [e]
+  (put! upload-reqs e))
+
+(defn in-tag [tag]
+  (conditionally #(= tag (:tag %))))
+
+(defn render-xml [xml]
+  (let [runs
+        (-> xml
+            (view (*> (in-tag :NXroot) (in [:content])
+                      each (in-tag :NXentry) (in [:content])
+                      each)))]
+    [:table
+     (for [run runs]
+       [:tr
+        [:td run]])]))
+        ;; [:td (-> run (view (in-tag :title)))]
+        ;; [:td (-> run (view (in-tag :proton_charge)))]])]))
 
 (defn simple-component [message]
   [:div
    [:p (str message)]])
 
-(defn render-simple [message]
-  (r/render
-   [simple-component message]
-   (.getElementById js/document "root")))
+(defn upload-btn [file-name]
+  [:span.upload-label
+   [:label
+    [:input.hidden-xs-up
+     {:type "file" :accept ".xml" :on-change put-upload}]
+    [:i.fa.fa-upload.fa-lg]
+    (or file-name "click here to upload and render csv...")]
+   (when file-name
+     [:i.fa.fa-time {:on-click #(reset! app-state{})}])])
 
-(defn in-tag [tag]
-  (conditionally #(= tag (:tag %))))
+(defn app []
+  (let [{:keys [file-name data] :as state} @app-state]
+    [:div.app
+     (render-xml (:data state))
+     [:div.topbar.hidden-print
+      [upload-btn file-name]]]))
+
+(go-loop []
+  (let [reader (js/FileReader.)
+        file (<! upload-reqs)]
+    (swap! app-state assoc :file-name (.-name file))
+    (set! (.-onload reader) #(put! file-reads %))
+    (.readAsText reader file)
+    (recur)))
+
+(go-loop []
+  (swap! app-state assoc :data (<! file-reads))
+  (recur))
+
+(defn render-simple []
+  (r/render
+   [app]
+   (.getElementById js/document "root")))
 
 (enable-console-print!)
 
-(render-simple
- (->
-  (xml/xml->clj xml)
-  (view (*> (in [:content])
-            each (in [:content])
-            each (in-tag :item) (in [:content])
-            each (in-tag :title) (in [:content])
-            each))))
+(render-simple)
